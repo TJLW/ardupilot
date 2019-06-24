@@ -35,12 +35,28 @@ static void catch_sigbus(int sig)
 }
 void RCOutput_ZYNQ::init()
 {
-    uint32_t mem_fd;
-    signal(SIGBUS,catch_sigbus);
-    mem_fd = open("/dev/mem", O_RDWR|O_SYNC|O_CLOEXEC);
-    sharedMem_cmd = (struct pwm_cmd *) mmap(0, 0x1000, PROT_READ|PROT_WRITE, 
-                                            MAP_SHARED, mem_fd, RCOUT_ZYNQ_PWM_BASE);
-    close(mem_fd);
+		#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
+
+			// The custom hardware for the ZyboZ7 processes period value inputs and provides
+			//	a 50Hz PWM output for each of the 8 channels
+			signal(SIGBUS,catch_sigbus);
+			int pwm_writer_fd = open("/dev/uio1", O_RDWR|O_SYNC|O_CLOEXEC);
+	    if (pwm_writer_fd == -1) {
+        AP_HAL::panic("Unable to open pwm_writer registers at /dev/uio0");
+	    }
+			pwm_channel_outputs = (uint16_t *) mmap(0, 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, pwm_writer_fd, 0x0);
+			close(pwm_writer_fd);
+
+		#else
+
+	    uint32_t mem_fd;
+	    signal(SIGBUS,catch_sigbus);
+	    mem_fd = open("/dev/mem", O_RDWR|O_SYNC|O_CLOEXEC);
+	    sharedMem_cmd = (struct pwm_cmd *) mmap(0, 0x1000, PROT_READ|PROT_WRITE,
+	                                            MAP_SHARED, mem_fd, RCOUT_ZYNQ_PWM_BASE);
+	    close(mem_fd);
+
+		#endif
 
     // all outputs default to 50Hz, the top level vehicle code
     // overrides this when necessary
@@ -49,14 +65,19 @@ void RCOutput_ZYNQ::init()
 
 void RCOutput_ZYNQ::set_freq(uint32_t chmask, uint16_t freq_hz)            //LSB corresponds to CHAN_1
 {
-    uint8_t i;
-    unsigned long tick=TICK_PER_S/(unsigned long)freq_hz;
+		#if CONFIG_HAL_BOARD_SUBTYPE != HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
+		// Currently the ZyboZ7 hardware pwm_writer is hard-coded to 50Hz,
+		//	thus it ignores this function
 
-    for (i=0;i<PWM_CHAN_COUNT;i++) {
-        if (chmask & (1U<<i)) {
-            sharedMem_cmd->periodhi[i].period=tick;
-        }
-    }
+	    uint8_t i;
+	    unsigned long tick=TICK_PER_S/(unsigned long)freq_hz;
+
+	    for (i=0;i<PWM_CHAN_COUNT;i++) {
+	        if (chmask & (1U<<i)) {
+	            sharedMem_cmd->periodhi[i].period=tick;
+	        }
+	    }
+		#endif
 }
 
 uint16_t RCOutput_ZYNQ::get_freq(uint8_t ch)
@@ -65,7 +86,13 @@ uint16_t RCOutput_ZYNQ::get_freq(uint8_t ch)
         return 0;
     }
 
-    return TICK_PER_S/sharedMem_cmd->periodhi[ch].period;
+		#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
+				// Currently the ZyboZ7 hardware pwm_writer is hard-coded to 50Hz
+				return (uint16_t) 50;
+		#else
+				return TICK_PER_S/sharedMem_cmd->periodhi[ch].period;
+		#endif
+
 }
 
 void RCOutput_ZYNQ::enable_ch(uint8_t ch)
@@ -88,7 +115,11 @@ void RCOutput_ZYNQ::write(uint8_t ch, uint16_t period_us)
         pending[ch] = period_us;
         pending_mask |= (1U << ch);
     } else {
-        sharedMem_cmd->periodhi[ch].hi = TICK_PER_US*period_us;
+				#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
+					pwm_channel_outputs[ch] = period_us;
+				#else
+	        sharedMem_cmd->periodhi[ch].hi = TICK_PER_US*period_us;
+				#endif
     }
 }
 
@@ -98,7 +129,12 @@ uint16_t RCOutput_ZYNQ::read(uint8_t ch)
         return 0;
     }
 
-    return sharedMem_cmd->periodhi[ch].hi/TICK_PER_US;
+		#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
+				return pwm_channel_outputs[ch];
+		#else
+				return sharedMem_cmd->periodhi[ch].hi/TICK_PER_US;
+		#endif
+
 }
 
 void RCOutput_ZYNQ::read(uint16_t* period_us, uint8_t len)
@@ -108,7 +144,11 @@ void RCOutput_ZYNQ::read(uint16_t* period_us, uint8_t len)
         len = PWM_CHAN_COUNT;
     }
     for(i=0;i<len;i++){
-        period_us[i] = sharedMem_cmd->periodhi[i].hi/TICK_PER_US;
+				#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
+					period_us[i] = pwm_channel_outputs[i];
+				#else
+					period_us[i] = sharedMem_cmd->periodhi[i].hi/TICK_PER_US;
+				#endif
     }
 }
 

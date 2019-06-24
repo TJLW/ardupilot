@@ -28,15 +28,20 @@ private:
     static const int TICK_PER_S=100000000;
 #endif
 
-    // Period|Hi 32 bits each
-    struct s_period_hi {
-        uint32_t period;
-        uint32_t hi;
-    };
-    struct pwm_cmd {
-        struct s_period_hi periodhi[MAX_ZYNQ_PWMS];
-    };
-    volatile struct pwm_cmd *sharedMem_cmd;
+
+#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
+		uint16_t *pwm_channel_outputs;
+#else
+		// Period|Hi 32 bits each
+		struct s_period_hi {
+				uint32_t period;
+				uint32_t hi;
+		};
+		struct pwm_cmd {
+				struct s_period_hi periodhi[MAX_ZYNQ_PWMS];
+		};
+		volatile struct pwm_cmd *sharedMem_cmd;
+#endif
 
     uint16_t pending[MAX_ZYNQ_PWMS];
     bool corked;

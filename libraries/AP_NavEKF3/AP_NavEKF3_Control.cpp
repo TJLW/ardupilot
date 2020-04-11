@@ -40,14 +40,16 @@ void NavEKF3_core::controlFilterModes()
 /*
   return effective value for _magCal for this core
  */
-uint8_t NavEKF3_core::effective_magCal(void) const
+NavEKF3_core::MagCal NavEKF3_core::effective_magCal(void) const
 {
+    MagCal magcal = MagCal(frontend->_magCal.get());
+
     // force use of simple magnetic heading fusion for specified cores
-    if (frontend->_magMask & core_index) {
-        return 2;
-    } else {
-        return frontend->_magCal;
+    if (magcal != MagCal::EXTERNAL_YAW && (frontend->_magMask & core_index)) {
+        return MagCal::NEVER;
     }
+
+    return magcal;
 }
 
 // Determine if learning of wind and magnetic field will be enabled and set corresponding indexing limits to
@@ -92,16 +94,17 @@ void NavEKF3_core::setWindMagStateLearningMode()
     }
 
     // Determine if learning of magnetic field states has been requested by the user
-    uint8_t magCal = effective_magCal();
+    MagCal magCal = effective_magCal();
     bool magCalRequested =
-            ((magCal == 0) && inFlight) || // when flying
-            ((magCal == 1) && manoeuvring)  || // when manoeuvring
-            ((magCal == 3) && finalInflightYawInit && finalInflightMagInit) || // when initial in-air yaw and mag field reset is complete
-            (magCal == 4); // all the time
+        ((magCal == MagCal::WHEN_FLYING) && inFlight) || // when flying
+        ((magCal == MagCal::WHEN_MANOEUVRING) && manoeuvring)  || // when manoeuvring
+        ((magCal == MagCal::AFTER_FIRST_CLIMB) && finalInflightYawInit && finalInflightMagInit) || // when initial in-air yaw and mag field reset is complete
+        ((magCal == MagCal::EXTERNAL_YAW_FALLBACK) && inFlight) ||
+        (magCal == MagCal::ALWAYS); // all the time
 
     // Deny mag calibration request if we aren't using the compass, it has been inhibited by the user,
     // we do not have an absolute position reference or are on the ground (unless explicitly requested by the user)
-    bool magCalDenied = !use_compass() || (magCal == 2) || (onGround && magCal != 4);
+    bool magCalDenied = !use_compass() || (magCal == MagCal::NEVER) || (onGround && magCal != MagCal::ALWAYS);
 
     // Inhibit the magnetic field calibration if not requested or denied
     bool setMagInhibit = !magCalRequested || magCalDenied;
@@ -395,6 +398,7 @@ void NavEKF3_core::checkAttitudeAlignmentStatus()
     if (!yawAlignComplete && tiltAlignComplete && use_compass()) {
             magYawResetRequest = true;
     }
+
 }
 
 // return true if we should use the airspeed sensor
@@ -449,7 +453,17 @@ bool NavEKF3_core::readyToUseRangeBeacon(void) const
 // return true if we should use the compass
 bool NavEKF3_core::use_compass(void) const
 {
-    return _ahrs->get_compass() && _ahrs->get_compass()->use_for_yaw(magSelectIndex) && !allMagSensorsFailed;
+    return effective_magCal() != MagCal::EXTERNAL_YAW && _ahrs->get_compass() && _ahrs->get_compass()->use_for_yaw(magSelectIndex) && !allMagSensorsFailed;
+}
+
+// are we using an external yaw source? Needed for ahrs attitudes_consistent
+bool NavEKF3_core::using_external_yaw(void) const
+{
+    MagCal mag_cal = effective_magCal();
+    if (mag_cal != MagCal::EXTERNAL_YAW && mag_cal != MagCal::EXTERNAL_YAW_FALLBACK) {
+        return false;
+    }
+    return AP_HAL::millis() - last_gps_yaw_fusion_ms < 5000;
 }
 
 /*
@@ -472,25 +486,28 @@ bool NavEKF3_core::setOriginLLH(const Location &loc)
     EKF_origin = loc;
     ekfGpsRefHgt = (double)0.01 * (double)EKF_origin.alt;
     // define Earth rotation vector in the NED navigation frame at the origin
-    calcEarthRateNED(earthRateNED, _ahrs->get_home().lat);
+    calcEarthRateNED(earthRateNED, loc.lat);
     validOrigin = true;
     return true;
 }
 
 // Set the NED origin to be used until the next filter reset
-void NavEKF3_core::setOrigin()
+void NavEKF3_core::setOrigin(const Location &loc)
 {
-    // assume origin at current GPS location (no averaging)
-    EKF_origin = AP::gps().location();
+    EKF_origin = loc;
     // if flying, correct for height change from takeoff so that the origin is at field elevation
     if (inFlight) {
         EKF_origin.alt += (int32_t)(100.0f * stateStruct.position.z);
     }
     ekfGpsRefHgt = (double)0.01 * (double)EKF_origin.alt;
     // define Earth rotation vector in the NED navigation frame at the origin
-    calcEarthRateNED(earthRateNED, _ahrs->get_home().lat);
+    calcEarthRateNED(earthRateNED, EKF_origin.lat);
     validOrigin = true;
-    gcs().send_text(MAV_SEVERITY_INFO, "EKF3 IMU%u Origin set to GPS",(unsigned)imu_index);
+    gcs().send_text(MAV_SEVERITY_INFO, "EKF3 IMU%u origin set",(unsigned)imu_index);
+
+    // put origin in frontend as well to ensure it stays in sync between lanes
+    frontend->common_EKF_origin = EKF_origin;
+    frontend->common_origin_valid = true;
 }
 
 // record a yaw reset event
@@ -559,5 +576,6 @@ void  NavEKF3_core::updateFilterStatus(void)
     filterStatus.flags.using_gps = ((imuSampleTime_ms - lastPosPassTime_ms) < 4000) && (PV_AidingMode == AID_ABSOLUTE);
     filterStatus.flags.gps_glitching = !gpsAccuracyGood && (PV_AidingMode == AID_ABSOLUTE) && (frontend->_fusionModeGPS != 3); // GPS glitching is affecting navigation accuracy
     filterStatus.flags.gps_quality_good = gpsGoodToAlign;
+    filterStatus.flags.initalized = filterStatus.flags.initalized || healthy();
 }
 

@@ -15,12 +15,25 @@ AP_Logger *AP_Logger::_singleton;
 extern const AP_HAL::HAL& hal;
 
 #ifndef HAL_LOGGING_FILE_BUFSIZE
+#if HAL_MEM_CLASS >= HAL_MEM_CLASS_300
+#define HAL_LOGGING_FILE_BUFSIZE  50
+#else
 #define HAL_LOGGING_FILE_BUFSIZE  16
-#endif 
+#endif
+#endif
 
 #ifndef HAL_LOGGING_MAV_BUFSIZE
 #define HAL_LOGGING_MAV_BUFSIZE  8
 #endif 
+
+#ifndef HAL_LOGGING_FILE_TIMEOUT
+#define HAL_LOGGING_FILE_TIMEOUT 5
+#endif 
+
+// by default log for 15 seconds after disarming
+#ifndef HAL_LOGGER_ARM_PERSIST
+#define HAL_LOGGER_ARM_PERSIST 15
+#endif
 
 #ifndef HAL_LOGGING_BACKENDS_DEFAULT
 # ifdef HAL_LOGGING_DATAFLASH
@@ -73,6 +86,13 @@ const AP_Param::GroupInfo AP_Logger::var_info[] = {
     // @Units: kB
     AP_GROUPINFO("_MAV_BUFSIZE",  5, AP_Logger, _params.mav_bufsize,       HAL_LOGGING_MAV_BUFSIZE),
 
+    // @Param: _FILE_TIMEOUT
+    // @DisplayName: Timeout before giving up on file writes
+    // @Description: This controls the amount of time before failing writes to a log file cause the file to be closed and logging stopped.
+    // @User: Standard
+    // @Units: s
+    AP_GROUPINFO("_FILE_TIMEOUT",  6, AP_Logger, _params.file_timeout,     HAL_LOGGING_FILE_TIMEOUT),
+    
     AP_GROUPEND
 };
 
@@ -91,7 +111,6 @@ AP_Logger::AP_Logger(const AP_Int32 &log_bitmask)
 
 void AP_Logger::Init(const struct LogStructure *structures, uint8_t num_types)
 {
-    gcs().send_text(MAV_SEVERITY_INFO, "Preparing log system");
     if (hal.util->was_watchdog_armed()) {
         gcs().send_text(MAV_SEVERITY_INFO, "Forcing logging for watchdog reset");
         _params.log_disarmed.set(1);
@@ -107,8 +126,7 @@ void AP_Logger::Init(const struct LogStructure *structures, uint8_t num_types)
     _num_types = num_types;
     _structures = structures;
 
-#if defined(HAL_BOARD_LOG_DIRECTORY)
- #if HAL_OS_POSIX_IO || HAL_OS_FATFS_IO
+#if defined(HAL_BOARD_LOG_DIRECTORY) && HAVE_FILESYSTEM_SUPPORT
     if (_params.backend_types & uint8_t(Backend_Type::FILESYSTEM)) {
         LoggerMessageWriter_DFLogStart *message_writer =
             new LoggerMessageWriter_DFLogStart();
@@ -119,15 +137,16 @@ void AP_Logger::Init(const struct LogStructure *structures, uint8_t num_types)
         }
         if (backends[_next_backend] == nullptr) {
             hal.console->printf("Unable to open AP_Logger_File");
+            // note that message_writer is leaked here; costs several
+            // hundred bytes to fix for marginal utility
         } else {
             _next_backend++;
         }
     }
- #endif
-#endif // HAL_BOARD_LOG_DIRECTORY
+#endif // HAVE_FILESYSTEM_SUPPORT
 
-#if LOGGER_MAVLINK_SUPPORT
-    if (_params.backend_types & uint8_t(Backend_Type::MAVLINK)) {
+#ifdef HAL_LOGGING_DATAFLASH
+    if (_params.backend_types & uint8_t(Backend_Type::BLOCK)) {
         if (_next_backend == LOGGER_MAX_BACKENDS) {
             AP_HAL::panic("Too many backends");
             return;
@@ -135,11 +154,12 @@ void AP_Logger::Init(const struct LogStructure *structures, uint8_t num_types)
         LoggerMessageWriter_DFLogStart *message_writer =
             new LoggerMessageWriter_DFLogStart();
         if (message_writer != nullptr)  {
-            backends[_next_backend] = new AP_Logger_MAVLink(*this,
-                                                            message_writer);
+            backends[_next_backend] = new AP_Logger_DataFlash(*this, message_writer);
         }
         if (backends[_next_backend] == nullptr) {
-            hal.console->printf("Unable to open AP_Logger_MAVLink");
+            hal.console->printf("Unable to open AP_Logger_DataFlash");
+            // note that message_writer is leaked here; costs several
+            // hundred bytes to fix for marginal utility
         } else {
             _next_backend++;
         }
@@ -159,14 +179,16 @@ void AP_Logger::Init(const struct LogStructure *structures, uint8_t num_types)
         }
         if (backends[_next_backend] == nullptr) {
             hal.console->printf("Unable to open AP_Logger_SITL");
+            // note that message_writer is leaked here; costs several
+            // hundred bytes to fix for marginal utility
         } else {
             _next_backend++;
         }
     }
 #endif
-
-#ifdef HAL_LOGGING_DATAFLASH
-    if (_params.backend_types & uint8_t(Backend_Type::BLOCK)) {
+    // the "main" logging type needs to come before mavlink so that index 0 is correct
+#if LOGGER_MAVLINK_SUPPORT
+    if (_params.backend_types & uint8_t(Backend_Type::MAVLINK)) {
         if (_next_backend == LOGGER_MAX_BACKENDS) {
             AP_HAL::panic("Too many backends");
             return;
@@ -174,16 +196,19 @@ void AP_Logger::Init(const struct LogStructure *structures, uint8_t num_types)
         LoggerMessageWriter_DFLogStart *message_writer =
             new LoggerMessageWriter_DFLogStart();
         if (message_writer != nullptr)  {
-            backends[_next_backend] = new AP_Logger_DataFlash(*this, message_writer);
+            backends[_next_backend] = new AP_Logger_MAVLink(*this,
+                                                            message_writer);
         }
         if (backends[_next_backend] == nullptr) {
-            hal.console->printf("Unable to open AP_Logger_DataFlash");
+            hal.console->printf("Unable to open AP_Logger_MAVLink");
+            // note that message_writer is leaked here; costs several
+            // hundred bytes to fix for marginal utility
         } else {
             _next_backend++;
         }
     }
 #endif
-    
+
     for (uint8_t i=0; i<_next_backend; i++) {
         backends[i]->Init();
     }
@@ -191,8 +216,6 @@ void AP_Logger::Init(const struct LogStructure *structures, uint8_t num_types)
     Prep();
 
     EnableWrites(true);
-
-    gcs().send_text(MAV_SEVERITY_INFO, "Prepared log system");
 }
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
@@ -201,7 +224,7 @@ void AP_Logger::Init(const struct LogStructure *structures, uint8_t num_types)
 #define DEBUG_LOG_STRUCTURES 0
 
 extern const AP_HAL::HAL& hal;
-#define Debug(fmt, args ...)  do {hal.console->printf("%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ## args); hal.scheduler->delay(1); } while(0)
+#define Debug(fmt, args ...)  do {::fprintf(stderr, "%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ## args); } while(0)
 
 /// return the number of commas present in string
 static uint8_t count_commas(const char *string)
@@ -218,7 +241,7 @@ static uint8_t count_commas(const char *string)
 /// return a unit name given its ID
 const char* AP_Logger::unit_name(const uint8_t unit_id)
 {
-    for(uint8_t i=0; i<unit_id; i++) {
+    for (uint8_t i=0; i<unit_id; i++) {
         if (_units[i].ID == unit_id) {
             return _units[i].unit;
         }
@@ -229,7 +252,7 @@ const char* AP_Logger::unit_name(const uint8_t unit_id)
 /// return a multiplier value given its ID
 double AP_Logger::multiplier_name(const uint8_t multiplier_id)
 {
-    for(uint8_t i=0; i<multiplier_id; i++) {
+    for (uint8_t i=0; i<multiplier_id; i++) {
         if (_multipliers[i].ID == multiplier_id) {
             return _multipliers[i].multiplier;
         }
@@ -509,10 +532,12 @@ void AP_Logger::backend_starting_new_log(const AP_Logger_Backend *backend)
 
 bool AP_Logger::should_log(const uint32_t mask) const
 {
+    bool armed = vehicle_is_armed();
+
     if (!(mask & _log_bitmask)) {
         return false;
     }
-    if (!vehicle_is_armed() && !log_while_disarmed()) {
+    if (!armed && !log_while_disarmed()) {
         return false;
     }
     if (in_log_download()) {
@@ -644,9 +669,9 @@ bool AP_Logger::logging_started(void) {
     return false;
 }
 
-void AP_Logger::handle_mavlink_msg(GCS_MAVLINK &link, mavlink_message_t* msg)
+void AP_Logger::handle_mavlink_msg(GCS_MAVLINK &link, const mavlink_message_t &msg)
 {
-    switch (msg->msgid) {
+    switch (msg.msgid) {
     case MAVLINK_MSG_ID_REMOTE_LOG_BLOCK_STATUS:
         FOR_EACH_BACKEND(remote_log_block_status_msg(link.get_chan(), msg));
         break;
@@ -685,7 +710,7 @@ void AP_Logger::Write_Message(const char *message)
     FOR_EACH_BACKEND(Write_Message(message));
 }
 
-void AP_Logger::Write_Mode(uint8_t mode, uint8_t reason)
+void AP_Logger::Write_Mode(uint8_t mode, const ModeReason reason)
 {
     FOR_EACH_BACKEND(Write_Mode(mode, reason));
 }
@@ -835,6 +860,8 @@ void AP_Logger::assert_same_fmt_for_name(const AP_Logger::log_write_fmt *f,
 
 AP_Logger::log_write_fmt *AP_Logger::msg_fmt_for_name(const char *name, const char *labels, const char *units, const char *mults, const char *fmt)
 {
+    WITH_SEMAPHORE(log_write_fmts_sem);
+
     struct log_write_fmt *f;
     for (f = log_write_fmts; f; f=f->next) {
         if (f->name == name) { // ptr comparison
@@ -978,7 +1005,7 @@ bool AP_Logger::fill_log_write_logstructure(struct LogStructure &logstruct, cons
     // find log structure information corresponding to msg_type:
     struct log_write_fmt *f;
     for (f = log_write_fmts; f; f=f->next) {
-        if(f->msg_type == msg_type) {
+        if (f->msg_type == msg_type) {
             break;
         }
     }
@@ -1068,7 +1095,7 @@ bool AP_Logger::Write_ISBH(const uint16_t seqno,
     if (_next_backend == 0) {
         return false;
     }
-    struct log_ISBH pkt = {
+    const struct log_ISBH pkt{
         LOG_PACKET_HEADER_INIT(LOG_ISBH_MSG),
         time_us        : AP_HAL::micros64(),
         seqno          : seqno,
@@ -1118,12 +1145,12 @@ bool AP_Logger::Write_ISBD(const uint16_t isb_seqno,
 }
 
 // Wrote an event packet
-void AP_Logger::Write_Event(Log_Event id)
+void AP_Logger::Write_Event(LogEvent id)
 {
-    struct log_Event pkt = {
+    const struct log_Event pkt{
         LOG_PACKET_HEADER_INIT(LOG_EVENT_MSG),
         time_us  : AP_HAL::micros64(),
-        id       : id
+        id       : (uint8_t)id
     };
     WriteCriticalBlock(&pkt, sizeof(pkt));
 }
@@ -1132,13 +1159,42 @@ void AP_Logger::Write_Event(Log_Event id)
 void AP_Logger::Write_Error(LogErrorSubsystem sub_system,
                             LogErrorCode error_code)
 {
-  struct log_Error pkt = {
+  const struct log_Error pkt{
       LOG_PACKET_HEADER_INIT(LOG_ERROR_MSG),
       time_us       : AP_HAL::micros64(),
       sub_system    : uint8_t(sub_system),
       error_code    : uint8_t(error_code),
   };
   WriteCriticalBlock(&pkt, sizeof(pkt));
+}
+
+/*
+  return true if we should log while disarmed
+ */
+bool AP_Logger::log_while_disarmed(void) const
+{
+    if (_force_log_disarmed) {
+        return true;
+    }
+    if (_params.log_disarmed != 0) {
+        return true;
+    }
+
+    uint32_t now = AP_HAL::millis();
+    uint32_t persist_ms = HAL_LOGGER_ARM_PERSIST*1000U;
+
+    // keep logging for HAL_LOGGER_ARM_PERSIST seconds after disarming
+    const uint32_t arm_change_ms = hal.util->get_last_armed_change();
+    if (!hal.util->get_soft_armed() && arm_change_ms != 0 && now - arm_change_ms < persist_ms) {
+        return true;
+    }
+
+    // keep logging for HAL_LOGGER_ARM_PERSIST seconds after an arming failure
+    if (_last_arming_failure_ms && now - _last_arming_failure_ms < persist_ms) {
+        return true;
+    }
+
+    return false;
 }
 
 namespace AP {

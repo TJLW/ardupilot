@@ -20,7 +20,6 @@ brand_map = {
     'PH4-mini' : ('Pixhawk 4 Mini', 'Holybro'),
     'KakuteF4' : ('KakuteF4', 'Holybro'),
     'KakuteF7' : ('KakuteF7', 'Holybro'),
-    'KakuteF7Mini' : ('KakuteF7Mini', 'Holybro'),
     'CubeBlack' : ('CubeBlack', 'Hex/ProfiCNC'),
     'CubeYellow' : ('CubeYellow', 'Hex/ProfiCNC'),
     'CubeOrange' : ('CubeOrange', 'Hex/ProfiCNC'),
@@ -29,7 +28,6 @@ brand_map = {
     'CubeGreen-solo' : ('CubeGreen Solo', 'Hex/ProfiCNC'),
     'CUAVv5' : ('CUAVv5', 'CUAV'),
     'CUAVv5Nano' : ('CUAVv5 Nano', 'CUAV'),
-    'CUAV-Nora' : ('CUAV Nora', 'CUAV'),
     'DrotekP3Pro' : ('Pixhawk 3 Pro', 'Drotek'),
     'MatekF405' : ('Matek F405', 'Matek'),
     'MatekF405-STD' : ('Matek F405 STD', 'Matek'),
@@ -190,7 +188,7 @@ class ManifestGenerator():
         }
         if 'USBID' in apj_json:
             # newer APJ files have USBID in the json data
-            firmware['USBID'] = [apj_json['USBID']]
+            firmware['USBID'] = apj_json['USBID']
         elif platform in USBID_MAP:
             firmware['USBID'] = USBID_MAP[platform]
         else:
@@ -226,11 +224,6 @@ class ManifestGenerator():
             (brand_name, manufacturer) = brand_map[platform]
             firmware['brand_name'] = brand_name
             firmware['manufacturer'] = manufacturer
-        # copy over some extra information if available
-        extra_tags = [ 'image_size' ]
-        for tag in extra_tags:
-            if tag in apj_json:
-                firmware[tag] = apj_json[tag]
 
     def add_USB_IDs(self, firmware):
         '''add USB IDs to a firmware'''
@@ -336,7 +329,7 @@ class ManifestGenerator():
 
                 filepath = os.path.join(some_dir, filename)
                 firmware_format = self.firmware_format_for_filepath(filepath)
-                if firmware_format not in [ "ELF", "abin", "apj", "hex", "px4", "bin" ]:
+                if firmware_format not in [ "ELF", "abin", "apj", "hex", "px4" ]:
                     print("Unknown firmware format (%s)" % firmware_format)
 
                 firmware = Firmware()
@@ -478,7 +471,7 @@ class ManifestGenerator():
                   file=sys.stderr)
 
         structure = self.walk_directory(self.basedir)
-        return json.dumps(structure, indent=4, separators=(',', ': '))
+        return json.dumps(structure, indent=4)
 
 
 def usage():
@@ -491,7 +484,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='generate manifest.json')
 
     parser.add_argument('--outfile', type=str, default=None, help='output file, default stdout')
-    parser.add_argument('--baseurl', type=str, default="https://firmware.ardupilot.org", help='base binaries directory')
+    parser.add_argument('--baseurl', type=str, default="http://firmware.ardupilot.org", help='base binaries directory')
     parser.add_argument('basedir', type=str, default="-", help='base binaries directory')
 
     args = parser.parse_args()

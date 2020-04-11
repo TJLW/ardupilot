@@ -15,15 +15,38 @@
 
 #include <AP_HAL/AP_HAL.h>
 #include "AP_Proximity_LightWareSF40C_v09.h"
+#include <AP_SerialManager/AP_SerialManager.h>
 #include <ctype.h>
 #include <stdio.h>
 
 extern const AP_HAL::HAL& hal;
 
+/* 
+   The constructor also initialises the proximity sensor. Note that this
+   constructor is not called until detect() returns true, so we
+   already know that we should setup the proximity sensor
+*/
+AP_Proximity_LightWareSF40C_v09::AP_Proximity_LightWareSF40C_v09(AP_Proximity &_frontend,
+                                                         AP_Proximity::Proximity_State &_state) :
+    AP_Proximity_Backend(_frontend, _state)
+{
+    const AP_SerialManager &serial_manager = AP::serialmanager();
+    uart = serial_manager.find_serial(AP_SerialManager::SerialProtocol_Lidar360, 0);
+    if (uart != nullptr) {
+        uart->begin(serial_manager.find_baudrate(AP_SerialManager::SerialProtocol_Lidar360, 0));
+    }
+}
+
+// detect if a Lightware proximity sensor is connected by looking for a configured serial port
+bool AP_Proximity_LightWareSF40C_v09::detect()
+{
+    return AP::serialmanager().find_serial(AP_SerialManager::SerialProtocol_Lidar360, 0) != nullptr;
+}
+
 // update the state of the sensor
 void AP_Proximity_LightWareSF40C_v09::update(void)
 {
-    if (_uart == nullptr) {
+    if (uart == nullptr) {
         return;
     }
 
@@ -78,30 +101,91 @@ bool AP_Proximity_LightWareSF40C_v09::initialise()
         }
         return false;
     }
-
     // initialise sectors
+    if (!_sector_initialised) {
+        init_sectors();
+        return false;
+    }
+    return true;
+}
+
+// initialise sector angles using user defined ignore areas
+void AP_Proximity_LightWareSF40C_v09::init_sectors()
+{
+    // use defaults if no ignore areas defined
+    uint8_t ignore_area_count = get_ignore_area_count();
+    if (ignore_area_count == 0) {
+        _sector_initialised = true;
+        return;
+    }
+
+    uint8_t sector = 0;
+
+    for (uint8_t i=0; i<ignore_area_count; i++) {
+
+        // get ignore area info
+        uint16_t ign_area_angle;
+        uint8_t ign_area_width;
+        if (get_ignore_area(i, ign_area_angle, ign_area_width)) {
+
+            // calculate how many degrees of space we have between this end of this ignore area and the start of the end
+            int16_t start_angle, end_angle;
+            get_next_ignore_start_or_end(1, ign_area_angle, start_angle);
+            get_next_ignore_start_or_end(0, start_angle, end_angle);
+            int16_t degrees_to_fill = wrap_360(end_angle - start_angle);
+
+            // divide up the area into sectors
+            while ((degrees_to_fill > 0) && (sector < PROXIMITY_SECTORS_MAX)) {
+                uint16_t sector_size;
+                if (degrees_to_fill >= 90) {
+                    // set sector to maximum of 45 degrees
+                    sector_size = 45;
+                } else if (degrees_to_fill > 45) {
+                    // use half the remaining area to optimise size of this sector and the next
+                    sector_size = degrees_to_fill / 2.0f;
+                } else  {
+                    // 45 degrees or less are left so put it all into the next sector
+                    sector_size = degrees_to_fill;
+                }
+                // record the sector middle and width
+                _sector_middle_deg[sector] = wrap_360(start_angle + sector_size / 2.0f);
+                _sector_width_deg[sector] = sector_size;
+
+                // move onto next sector
+                start_angle += sector_size;
+                sector++;
+                degrees_to_fill -= sector_size;
+            }
+        }
+    }
+
+    // set num sectors
+    _num_sectors = sector;
+
+    // re-initialise boundary because sector locations have changed
     init_boundary();
 
-    return true;
+    // record success
+    _sector_initialised = true;
 }
 
 // set speed of rotating motor
 void AP_Proximity_LightWareSF40C_v09::set_motor_speed(bool on_off)
 {
     // exit immediately if no uart
-    if (_uart == nullptr) {
+    if (uart == nullptr) {
         return;
     }
 
     // set motor update speed
     if (on_off) {
-        _uart->write("#MBS,3\r\n");  // send request to spin motor at 4.5hz
+        uart->write("#MBS,3\r\n");  // send request to spin motor at 4.5hz
     } else {
-        _uart->write("#MBS,0\r\n");  // send request to stop motor
+        uart->write("#MBS,0\r\n");  // send request to stop motor
     }
 
     // request update motor speed
-    _uart->write("?MBS\r\n");
+    uart->write("?MBS\r\n");
     _last_request_type = RequestType_MotorSpeed;
     _last_request_ms = AP_HAL::millis();
 }
@@ -110,19 +194,19 @@ void AP_Proximity_LightWareSF40C_v09::set_motor_speed(bool on_off)
 void AP_Proximity_LightWareSF40C_v09::set_motor_direction()
 {
     // exit immediately if no uart
-    if (_uart == nullptr) {
+    if (uart == nullptr) {
         return;
     }
 
     // set motor update speed
     if (frontend.get_orientation(state.instance) == 0) {
-        _uart->write("#MBD,0\r\n");  // spin clockwise
+        uart->write("#MBD,0\r\n");  // spin clockwise
     } else {
-        _uart->write("#MBD,1\r\n");  // spin counter clockwise
+        uart->write("#MBD,1\r\n");  // spin counter clockwise
     }
 
     // request update on motor direction
-    _uart->write("?MBD\r\n");
+    uart->write("?MBD\r\n");
     _last_request_type = RequestType_MotorDirection;
     _last_request_ms = AP_HAL::millis();
 }
@@ -131,7 +215,7 @@ void AP_Proximity_LightWareSF40C_v09::set_motor_direction()
 void AP_Proximity_LightWareSF40C_v09::set_forward_direction()
 {
     // exit immediately if no uart
-    if (_uart == nullptr) {
+    if (uart == nullptr) {
         return;
     }
 
@@ -140,10 +224,10 @@ void AP_Proximity_LightWareSF40C_v09::set_forward_direction()
     int16_t yaw_corr = frontend.get_yaw_correction(state.instance);
     yaw_corr = constrain_int16(yaw_corr, -999, 999);
     snprintf(request_str, sizeof(request_str), "#MBF,%d\r\n", yaw_corr);
-    _uart->write(request_str);
+    uart->write(request_str);
 
     // request update on motor direction
-    _uart->write("?MBF\r\n");
+    uart->write("?MBF\r\n");
     _last_request_type = RequestType_ForwardDirection;
     _last_request_ms = AP_HAL::millis();
 }
@@ -151,7 +235,7 @@ void AP_Proximity_LightWareSF40C_v09::set_forward_direction()
 // request new data if required
 void AP_Proximity_LightWareSF40C_v09::request_new_data()
 {
-    if (_uart == nullptr) {
+    if (uart == nullptr) {
         return;
     }
 
@@ -179,11 +263,11 @@ void AP_Proximity_LightWareSF40C_v09::request_new_data()
 // send request for sensor health
 void AP_Proximity_LightWareSF40C_v09::send_request_for_health()
 {
-    if (_uart == nullptr) {
+    if (uart == nullptr) {
         return;
     }
 
-    _uart->write("?GS\r\n");
+    uart->write("?GS\r\n");
     _last_request_type = RequestType_Health;
     _last_request_ms = AP_HAL::millis();
 }
@@ -191,22 +275,22 @@ void AP_Proximity_LightWareSF40C_v09::send_request_for_health()
 // send request for distance from the next sector
 bool AP_Proximity_LightWareSF40C_v09::send_request_for_distance()
 {
-    if (_uart == nullptr) {
+    if (uart == nullptr) {
         return false;
     }
 
     // increment sector
     _last_sector++;
-    if (_last_sector >= PROXIMITY_NUM_SECTORS) {
+    if (_last_sector >= _num_sectors) {
         _last_sector = 0;
     }
 
     // prepare request
     char request_str[16];
     snprintf(request_str, sizeof(request_str), "?TS,%u,%u\r\n",
-             (unsigned int)PROXIMITY_SECTOR_WIDTH_DEG,
-             _sector_middle_deg[_last_sector]);
-    _uart->write(request_str);
+             MIN(_sector_width_deg[_last_sector], 999),
+             MIN(_sector_middle_deg[_last_sector], 999));
+    uart->write(request_str);
 
 
     // record request for distance
@@ -219,7 +303,7 @@ bool AP_Proximity_LightWareSF40C_v09::send_request_for_distance()
 // check for replies from sensor, returns true if at least one message was processed
 bool AP_Proximity_LightWareSF40C_v09::check_for_reply()
 {
-    if (_uart == nullptr) {
+    if (uart == nullptr) {
         return false;
     }
 
@@ -230,9 +314,9 @@ bool AP_Proximity_LightWareSF40C_v09::check_for_reply()
     //        distance data appears after a <space>
     //    distance data is comma separated so we put into separate elements (i.e. <space>angle,distance)
     uint16_t count = 0;
-    int16_t nbytes = _uart->available();
+    int16_t nbytes = uart->available();
     while (nbytes-- > 0) {
-        char c = _uart->read();
+        char c = uart->read();
         // check for end of packet
         if (c == '\r' || c == '\n') {
             if ((element_len[0] > 0)) {
@@ -286,7 +370,7 @@ bool AP_Proximity_LightWareSF40C_v09::check_for_reply()
 // process reply
 bool AP_Proximity_LightWareSF40C_v09::process_reply()
 {
-    if (_uart == nullptr) {
+    if (uart == nullptr) {
         return false;
     }
 
@@ -324,10 +408,10 @@ bool AP_Proximity_LightWareSF40C_v09::process_reply()
 
         case RequestType_DistanceMeasurement:
         {
-            float angle_deg = strtof(element_buf[0], NULL);
-            float distance_m = strtof(element_buf[1], NULL);
-            if (!ignore_reading(angle_deg)) {
-                const uint8_t sector = convert_angle_to_sector(angle_deg);
+            float angle_deg = (float)atof(element_buf[0]);
+            float distance_m = (float)atof(element_buf[1]);
+            uint8_t sector;
+            if (convert_angle_to_sector(angle_deg, sector)) {
                 _angle[sector] = angle_deg;
                 _distance[sector] = distance_m;
                 _distance_valid[sector] = is_positive(distance_m);

@@ -585,10 +585,11 @@ const AP_Param::GroupInfo NavEKF2::var_info[] = {
     AP_GROUPEND
 };
 
-NavEKF2::NavEKF2()
+NavEKF2::NavEKF2(const AP_AHRS *ahrs, const RangeFinder &rng) :
+    _ahrs(ahrs),
+    _rng(rng)
 {
     AP_Param::setup_object_defaults(this, var_info);
-    _ahrs = &AP::ahrs();
 }
 
 /*
@@ -620,16 +621,7 @@ void NavEKF2::check_log_write(void)
 // Initialise the filter
 bool NavEKF2::InitialiseFilter(void)
 {
-    // Return immediately if there is insufficient memory
-    if (core_malloc_failed) {
-        return false;
-    }
-
-    initFailure = InitFailures::UNKNOWN;
     if (_enable == 0) {
-        if (_ahrs->get_ekf_type() == 2) {
-            initFailure = InitFailures::NO_ENABLE;
-        }
         return false;
     }
     const AP_InertialSensor &ins = AP::ins();
@@ -650,37 +642,30 @@ bool NavEKF2::InitialiseFilter(void)
     
     if (core == nullptr) {
 
-        // don't allow more filters than IMUs
+        // don't run multiple filters for 1 IMU
         uint8_t mask = (1U<<ins.get_accel_count())-1;
         _imuMask.set(_imuMask.get() & mask);
         
         // count IMUs from mask
-        num_cores = __builtin_popcount(_imuMask);
-
-        // abort if num_cores is zero
-        if (num_cores == 0) {
-            if (ins.get_accel_count() == 0) {
-                initFailure = InitFailures::NO_IMUS;
-            } else {
-                initFailure = InitFailures::NO_MASK;
+        num_cores = 0;
+        for (uint8_t i=0; i<7; i++) {
+            if (_imuMask & (1U<<i)) {
+                num_cores++;
             }
-            return false;
         }
 
         // check if there is enough memory to create the EKF cores
         if (hal.util->available_memory() < sizeof(NavEKF2_core)*num_cores + 4096) {
-            initFailure = InitFailures::NO_MEM;
-            core_malloc_failed = true;
-            gcs().send_text(MAV_SEVERITY_CRITICAL, "NavEKF2: not enough memory available");
+            gcs().send_text(MAV_SEVERITY_CRITICAL, "NavEKF2: not enough memory");
+            _enable.set(0);
             return false;
         }
 
         // try to allocate from CCM RAM, fallback to Normal RAM if not available or full
         core = (NavEKF2_core*)hal.util->malloc_type(sizeof(NavEKF2_core)*num_cores, AP_HAL::Util::MEM_FAST);
         if (core == nullptr) {
-            initFailure = InitFailures::NO_MEM;
-            core_malloc_failed = true;
-            gcs().send_text(MAV_SEVERITY_CRITICAL, "NavEKF2: memory allocation failed");
+            _enable.set(0);
+            gcs().send_text(MAV_SEVERITY_CRITICAL, "NavEKF2: allocation failed");
             return false;
         }
 
@@ -694,11 +679,6 @@ bool NavEKF2::InitialiseFilter(void)
         for (uint8_t i=0; i<7; i++) {
             if (_imuMask & (1U<<i)) {
                 if(!core[num_cores].setup_core(i, num_cores)) {
-                    // if any core setup fails, free memory, zero the core pointer and abort
-                    hal.util->free_type(core, sizeof(NavEKF2_core)*num_cores, AP_HAL::Util::MEM_FAST);
-                    core = nullptr;
-                    initFailure = InitFailures::NO_SETUP;
-                    gcs().send_text(MAV_SEVERITY_WARNING, "NavEKF2: core %d setup failed", num_cores);
                     return false;
                 }
                 num_cores++;
@@ -1367,7 +1347,7 @@ void  NavEKF2::getFilterGpsStatus(int8_t instance, nav_gps_status &status) const
 }
 
 // send an EKF_STATUS_REPORT message to GCS
-void NavEKF2::send_status_report(mavlink_channel_t chan) const
+void NavEKF2::send_status_report(mavlink_channel_t chan)
 {
     if (core) {
         core[primary].send_status_report(chan);
@@ -1475,7 +1455,7 @@ uint32_t NavEKF2::getLastVelNorthEastReset(Vector2f &vel) const
 const char *NavEKF2::prearm_failure_reason(void) const
 {
     if (!core) {
-        return initFailureReason[int(initFailure)];
+        return "no EKF2 cores";
     }
     for (uint8_t i = 0; i < num_cores; i++) {
         const char * failure = core[i].prearm_failure_reason();

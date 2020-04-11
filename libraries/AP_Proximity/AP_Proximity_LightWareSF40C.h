@@ -1,22 +1,21 @@
 #pragma once
 
 #include "AP_Proximity.h"
-#include "AP_Proximity_Backend_Serial.h"
+#include "AP_Proximity_Backend.h"
 
 #define PROXIMITY_SF40C_TIMEOUT_MS            200   // requests timeout after 0.2 seconds
 #define PROXIMITY_SF40C_PAYLOAD_LEN_MAX       256   // maximum payload size we can accept (in some configurations sensor may send as large as 1023)
-#define PROXIMITY_SF40C_COMBINE_READINGS        7   // combine this many readings together to improve efficiency
 
-class AP_Proximity_LightWareSF40C : public AP_Proximity_Backend_Serial
+class AP_Proximity_LightWareSF40C : public AP_Proximity_Backend
 {
 
 public:
     // constructor
-    using AP_Proximity_Backend_Serial::AP_Proximity_Backend_Serial;
+    AP_Proximity_LightWareSF40C(AP_Proximity &_frontend,
+                                AP_Proximity::Proximity_State &_state);
 
-    uint16_t rxspace() const override {
-        return 1280;
-    };
+    // static detection function
+    static bool detect();
 
     // update state
     void update(void) override;
@@ -29,6 +28,7 @@ private:
 
     // initialise sensor
     void initialise();
+    void init_sectors();
 
     // restart sensor and re-init our state
     void restart_sensor();
@@ -105,6 +105,8 @@ private:
     void process_message();
 
     // internal variables
+    AP_HAL::UARTDriver *_uart;              // uart for communicating with sensor
+    bool _sector_initialised;               // true if sectors have been initialised
     uint32_t _last_request_ms;              // system time of last request
     uint32_t _last_reply_ms;                // system time of last valid reply
     uint32_t _last_restart_ms;              // system time we restarted the sensor

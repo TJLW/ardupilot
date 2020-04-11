@@ -262,3 +262,7 @@ private:
 namespace AP {
     AP_BoardConfig *boardConfig(void);
 };
+
+namespace AP {
+    AP_BoardConfig *boardConfig(void);
+};

@@ -19,8 +19,6 @@
 #include <AP_Param/AP_Param.h>
 #include "NotchFilter.h"
 
-#define HNF_MAX_HARMONICS 8
-
 /*
   a filter that manages a set of notch filters targetted at a fundamental center frequency
   and multiples of that fundamental frequency
@@ -58,15 +56,6 @@ private:
     bool _initialised;
 };
 
-// Harmonic notch update mode
-enum class HarmonicNotchDynamicMode {
-    Fixed           = 0,
-    UpdateThrottle  = 1,
-    UpdateRPM       = 2,
-    UpdateBLHeli    = 3,
-    UpdateGyroFFT   = 4,
-};
-
 /*
   harmonic notch filter configuration parameters
  */
@@ -80,7 +69,7 @@ public:
     // reference value of the harmonic notch
     float reference(void) const { return _reference; }
     // notch dynamic tracking mode
-    HarmonicNotchDynamicMode tracking_mode(void) const { return HarmonicNotchDynamicMode(_tracking_mode.get()); }
+    uint8_t tracking_mode(void) const { return _tracking_mode; }
     static const struct AP_Param::GroupInfo var_info[];
 
 private:

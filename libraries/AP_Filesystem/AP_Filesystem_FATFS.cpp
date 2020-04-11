@@ -31,7 +31,7 @@ static bool remount_needed;
 // use a semaphore to ensure that only one filesystem operation is
 // happening at a time. A recursive semaphore is used to cope with the
 // mkdir() inside sdcard_retry()
-static HAL_Semaphore sem;
+static HAL_Semaphore_Recursive sem;
 
 typedef struct {
     FIL *fh;
@@ -41,7 +41,7 @@ typedef struct {
 #define MAX_FILES 16
 static FAT_FILE *file_table[MAX_FILES];
 
-static int isatty_(int fileno)
+static bool isatty(int fileno)
 {
     if (fileno >= 0 && fileno <= 2) {
         return true;
@@ -59,7 +59,7 @@ static int new_file_descriptor(const char *pathname)
     FIL *fh;
 
     for (i=0; i<MAX_FILES; ++i) {
-        if (isatty_(i)) {
+        if (isatty(i)) {
             continue;
         }
         if ( file_table[i] == NULL) {
@@ -114,7 +114,7 @@ static int free_file_descriptor(int fileno)
     FAT_FILE *stream;
     FIL *fh;
 
-    if (isatty_( fileno )) {
+    if (isatty( fileno )) {
         errno = EBADF;
         return -1;
     }
@@ -144,7 +144,7 @@ static FIL *fileno_to_fatfs(int fileno)
     FAT_FILE *stream;
     FIL *fh;
 
-    if (isatty_( fileno )) {
+    if (isatty( fileno )) {
         errno = EBADF;
         return nullptr;
     }
@@ -276,7 +276,7 @@ static bool remount_file_system(void)
     return true;
 }
 
-int AP_Filesystem_FATFS::open(const char *pathname, int flags)
+int AP_Filesystem::open(const char *pathname, int flags)
 {
     int fileno;
     int fatfs_modes;
@@ -352,7 +352,7 @@ int AP_Filesystem_FATFS::open(const char *pathname, int flags)
     return fileno;
 }
 
-int AP_Filesystem_FATFS::close(int fileno)
+int AP_Filesystem::close(int fileno)
 {
     FAT_FILE *stream;
     FIL *fh;
@@ -382,7 +382,7 @@ int AP_Filesystem_FATFS::close(int fileno)
     return 0;
 }
 
-ssize_t AP_Filesystem_FATFS::read(int fd, void *buf, size_t count)
+ssize_t AP_Filesystem::read(int fd, void *buf, size_t count)
 {
     UINT bytes = count;
     int res;
@@ -414,10 +414,7 @@ ssize_t AP_Filesystem_FATFS::read(int fd, void *buf, size_t count)
             errno = fatfs_to_errno((FRESULT)res);
             return -1;
         }
-        if (size == 0) {
-            break;
-        }
-        if (size > n) {
+        if (size > n || size == 0) {
             errno = EIO;
             return -1;
         }
@@ -431,7 +428,7 @@ ssize_t AP_Filesystem_FATFS::read(int fd, void *buf, size_t count)
     return (ssize_t)total;
 }
 
-ssize_t AP_Filesystem_FATFS::write(int fd, const void *buf, size_t count)
+ssize_t AP_Filesystem::write(int fd, const void *buf, size_t count)
 {
     UINT bytes = count;
     FRESULT res;
@@ -479,7 +476,7 @@ ssize_t AP_Filesystem_FATFS::write(int fd, const void *buf, size_t count)
     return (ssize_t)total;
 }
 
-int AP_Filesystem_FATFS::fsync(int fileno)
+int AP_Filesystem::fsync(int fileno)
 {
     FAT_FILE *stream;
     FIL *fh;
@@ -508,7 +505,7 @@ int AP_Filesystem_FATFS::fsync(int fileno)
     return 0;
 }
 
-off_t AP_Filesystem_FATFS::lseek(int fileno, off_t position, int whence)
+off_t AP_Filesystem::lseek(int fileno, off_t position, int whence)
 {
     FRESULT res;
     FIL *fh;
@@ -522,7 +519,7 @@ off_t AP_Filesystem_FATFS::lseek(int fileno, off_t position, int whence)
         errno = EMFILE;
         return -1;
     }
-    if (isatty_(fileno)) {
+    if (isatty(fileno)) {
         return -1;
     }
 
@@ -599,7 +596,7 @@ static time_t fat_time_to_unix(uint16_t date, uint16_t time)
     return unix;
 }
 
-int AP_Filesystem_FATFS::stat(const char *name, struct stat *buf)
+int AP_Filesystem::stat(const char *name, struct stat *buf)
 {
     FILINFO info;
     int res;
@@ -667,7 +664,7 @@ int AP_Filesystem_FATFS::stat(const char *name, struct stat *buf)
     return 0;
 }
 
-int AP_Filesystem_FATFS::unlink(const char *pathname)
+int AP_Filesystem::unlink(const char *pathname)
 {
     WITH_SEMAPHORE(sem);
 
@@ -680,7 +677,7 @@ int AP_Filesystem_FATFS::unlink(const char *pathname)
     return 0;
 }
 
-int AP_Filesystem_FATFS::mkdir(const char *pathname)
+int AP_Filesystem::mkdir(const char *pathname)
 {
     WITH_SEMAPHORE(sem);
 
@@ -703,7 +700,7 @@ struct DIR_Wrapper {
     struct dirent de;
 };
 
-void *AP_Filesystem_FATFS::opendir(const char *pathdir)
+DIR *AP_Filesystem::opendir(const char *pathdir)
 {
     WITH_SEMAPHORE(sem);
 
@@ -730,10 +727,9 @@ void *AP_Filesystem_FATFS::opendir(const char *pathdir)
     return &ret->d;
 }
 
-struct dirent *AP_Filesystem_FATFS::readdir(void *dirp_void)
+struct dirent *AP_Filesystem::readdir(DIR *dirp)
 {
     WITH_SEMAPHORE(sem);
-    DIR *dirp = (DIR *)dirp_void;
 
     struct DIR_Wrapper *d = (struct DIR_Wrapper *)dirp;
     if (!d) {
@@ -745,7 +741,7 @@ struct dirent *AP_Filesystem_FATFS::readdir(void *dirp_void)
     int res;
 
     d->de.d_name[0] = 0;
-    res = f_readdir(dirp, &fno);
+    res = f_readdir ( dirp, &fno );
     if (res != FR_OK || fno.fname[0] == 0) {
         errno = fatfs_to_errno((FRESULT)res);
         return nullptr;
@@ -761,9 +757,8 @@ struct dirent *AP_Filesystem_FATFS::readdir(void *dirp_void)
     return &d->de;
 }
 
-int AP_Filesystem_FATFS::closedir(void *dirp_void)
+int AP_Filesystem::closedir(DIR *dirp)
 {
-    DIR *dirp = (DIR *)dirp_void;
     WITH_SEMAPHORE(sem);
 
     struct DIR_Wrapper *d = (struct DIR_Wrapper *)dirp;
@@ -782,7 +777,7 @@ int AP_Filesystem_FATFS::closedir(void *dirp_void)
 }
 
 // return free disk space in bytes
-int64_t AP_Filesystem_FATFS::disk_free(const char *path)
+int64_t AP_Filesystem::disk_free(const char *path)
 {
     WITH_SEMAPHORE(sem);
 
@@ -803,7 +798,7 @@ int64_t AP_Filesystem_FATFS::disk_free(const char *path)
 }
 
 // return total disk space in bytes
-int64_t AP_Filesystem_FATFS::disk_space(const char *path)
+int64_t AP_Filesystem::disk_space(const char *path)
 {
     WITH_SEMAPHORE(sem);
 
@@ -843,7 +838,7 @@ static void unix_time_to_fat(time_t epoch, uint16_t &date, uint16_t &time)
 /*
   set mtime on a file
  */
-bool AP_Filesystem_FATFS::set_mtime(const char *filename, const time_t mtime_sec)
+bool AP_Filesystem::set_mtime(const char *filename, const time_t mtime_sec)
 {
     FILINFO fno;
     uint16_t fdate, ftime;

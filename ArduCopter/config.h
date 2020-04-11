@@ -207,9 +207,12 @@
 #endif
 
 //////////////////////////////////////////////////////////////////////////////
-//  OPTICAL_FLOW
+//  OPTICAL_FLOW & VISUAL ODOMETRY
 #ifndef OPTFLOW
  # define OPTFLOW       ENABLED
+#endif
+#ifndef VISUAL_ODOMETRY_ENABLED
+# define VISUAL_ODOMETRY_ENABLED !HAL_MINIMIZE_FEATURES
 #endif
 
 //////////////////////////////////////////////////////////////////////////////
@@ -221,7 +224,7 @@
 //////////////////////////////////////////////////////////////////////////////
 //  Crop Sprayer - enabled only on larger firmwares
 #ifndef SPRAYER_ENABLED
- # define SPRAYER_ENABLED  HAL_SPRAYER_ENABLED
+ # define SPRAYER_ENABLED  !HAL_MINIMIZE_FEATURES
 #endif
 
 //////////////////////////////////////////////////////////////////////////////
@@ -251,7 +254,7 @@
 //////////////////////////////////////////////////////////////////////////////
 // Parachute release
 #ifndef PARACHUTE
- # define PARACHUTE HAL_PARACHUTE_ENABLED
+ # define PARACHUTE ENABLED
 #endif
 
 //////////////////////////////////////////////////////////////////////////////
@@ -366,9 +369,6 @@
 // ZigZag - allow vehicle to fly in a zigzag manner with predefined point A B
 #ifndef MODE_ZIGZAG_ENABLED
 # define MODE_ZIGZAG_ENABLED !HAL_MINIMIZE_FEATURES
-#endif
-#if MODE_ZIGZAG_ENABLED == ENABLED && HAL_SPRAYER_ENABLED
-# define ZIGZAG_AUTO_PUMP_ENABLED DISABLED
 #endif
 
 //////////////////////////////////////////////////////////////////////////////

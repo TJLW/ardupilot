@@ -991,6 +991,28 @@ struct PACKED log_CESC {
     uint8_t power_pct;
 };
 
+struct PACKED log_CSRV {
+    LOG_PACKET_HEADER;
+    uint64_t time_us;     
+    uint8_t id;
+    float position;
+    float force;
+    float speed;
+    uint8_t power_pct;
+};
+
+struct PACKED log_CESC {
+    LOG_PACKET_HEADER;
+    uint64_t time_us;     
+    uint8_t id;
+    uint32_t error_count;
+    float voltage;
+    float current;
+    float temperature;
+    int32_t rpm;
+    uint8_t power_pct;
+};
+
 struct PACKED log_AIRSPEED {
     LOG_PACKET_HEADER;
     uint64_t time_us;

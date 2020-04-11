@@ -66,10 +66,8 @@ public:
     virtual bool is_taking_off() const;
     static void takeoff_stop() { takeoff.stop(); }
 
+    virtual bool landing_gear_should_be_deployed() const { return false; }
     virtual bool is_landing() const { return false; }
-
-    // mode requires terrain to be present to be functional
-    virtual bool requires_terrain_failsafe() const { return false; }
 
     // functions for reporting to GCS
     virtual bool get_wp(Location &loc) { return false; };
@@ -171,9 +169,8 @@ protected:
     // waypoint navigation but the user can control the yaw.
     void auto_takeoff_run();
     void auto_takeoff_set_start_alt(void);
-
-    // altitude above-ekf-origin below which auto takeoff does not control horizontal position
-    static bool auto_takeoff_no_nav_active;
+    void auto_takeoff_attitude_run(float target_yaw_rate);
+    // altitude below which we do no navigation in auto takeoff
     static float auto_takeoff_no_nav_alt_cm;
 
 public:
@@ -244,6 +241,7 @@ public:
     bool set_mode(Mode::Number mode, ModeReason reason);
     void set_land_complete(bool b);
     GCS_Copter &gcs();
+    void Log_Write_Event(Log_Event id);
     void set_throttle_takeoff(void);
     float get_avoidance_adjusted_climbrate(float target_rate);
     uint16_t get_pilot_speed_dn(void);
@@ -258,12 +256,6 @@ class ModeAcro : public Mode {
 public:
     // inherit constructor
     using Mode::Mode;
-
-    enum class Trainer {
-        OFF = 0,
-        LEVELING = 1,
-        LIMITED = 2,
-    };
 
     virtual void run() override;
 
@@ -351,6 +343,7 @@ public:
     bool loiter_start();
     void rtl_start();
     void takeoff_start(const Location& dest_loc);
+    void wp_start(const Vector3f& destination, bool terrain_alt);
     void wp_start(const Location& dest_loc);
     void land_start();
     void land_start(const Vector3f& destination);
@@ -361,10 +354,9 @@ public:
     void nav_guided_start();
 
     bool is_landing() const override;
+    bool landing_gear_should_be_deployed() const override;
 
     bool is_taking_off() const override;
-
-    bool requires_terrain_failsafe() const override { return true; }
 
     // return true if this flight mode supports user takeoff
     //  must_nagivate is true if mode must also control horizontal position
@@ -487,11 +479,7 @@ private:
     int32_t condition_value;  // used in condition commands (eg delay, change alt, etc.)
     uint32_t condition_start;
 
-    enum class State {
-        FlyToLocation = 0,
-        Descending = 1
-    };
-    State state = State::FlyToLocation;
+    LandStateType land_state = LandStateType_FlyToLocation; // records state of land (flying to location, descending)
 
     struct {
         PayloadPlaceStateType state = PayloadPlaceStateType_Calibrating_Hover_Start; // records state of place (descending, releasing, released, ...)
@@ -521,6 +509,7 @@ protected:
     float get_pilot_desired_climb_rate_cms(void) const override;
     void get_pilot_desired_rp_yrate_cd(float &roll_cd, float &pitch_cd, float &yaw_rate_cds) override;
     void init_z_limits() override;
+    void Log_Write_Event(enum at_event id) override;
     void log_pids() override;
 };
 
@@ -780,10 +769,8 @@ public:
     bool has_user_takeoff(bool must_navigate) const override { return true; }
     bool in_guided_mode() const override { return true; }
 
-    bool requires_terrain_failsafe() const override { return true; }
-
     void set_angle(const Quaternion &q, float climb_rate_cms, bool use_yaw_rate, float yaw_rate_rads);
-    bool set_destination(const Vector3f& destination, bool use_yaw = false, float yaw_cd = 0.0, bool use_yaw_rate = false, float yaw_rate_cds = 0.0, bool yaw_relative = false, bool terrain_alt = false);
+    bool set_destination(const Vector3f& destination, bool use_yaw = false, float yaw_cd = 0.0, bool use_yaw_rate = false, float yaw_rate_cds = 0.0, bool yaw_relative = false);
     bool set_destination(const Location& dest_loc, bool use_yaw = false, float yaw_cd = 0.0, bool use_yaw_rate = false, float yaw_rate_cds = 0.0, bool yaw_relative = false);
     bool get_wp(Location &loc) override;
     void set_velocity(const Vector3f& velocity, bool use_yaw = false, float yaw_cd = 0.0, bool use_yaw_rate = false, float yaw_rate_cds = 0.0, bool yaw_relative = false, bool log_request = true);
@@ -796,7 +783,7 @@ public:
 
     bool is_taking_off() const override;
 
-    bool do_user_takeoff_start(float takeoff_alt_cm) override;
+    bool do_user_takeoff_start(float final_alt_above_home) override;
 
     GuidedMode mode() const { return guided_mode; }
 
@@ -869,6 +856,7 @@ public:
     bool is_autopilot() const override { return true; }
 
     bool is_landing() const override { return true; };
+    bool landing_gear_should_be_deployed() const override { return true; };
 
     void do_not_use_GPS();
 
@@ -1021,35 +1009,18 @@ public:
     bool allows_arming(bool from_gcs) const override { return false; };
     bool is_autopilot() const override { return true; }
 
-    bool requires_terrain_failsafe() const override { return true; }
-
     // for reporting to GCS
     bool get_wp(Location &loc) override;
 
-    // RTL states
-    enum RTLState {
-        RTL_Starting,
-        RTL_InitialClimb,
-        RTL_ReturnHome,
-        RTL_LoiterAtHome,
-        RTL_FinalDescent,
-        RTL_Land
-    };
     RTLState state() { return _state; }
 
     // this should probably not be exposed
     bool state_complete() { return _state_complete; }
 
     bool is_landing() const override;
+    bool landing_gear_should_be_deployed() const override;
 
     void restart_without_terrain();
-
-    // enum for RTL_ALT_TYPE parameter
-    enum class RTLAltType {
-        RTL_ALTTYPE_RELATIVE = 0,
-        RTL_ALTTYPE_TERRAIN = 1
-    };
-    ModeRTL::RTLAltType get_alt_type() const;
 
 protected:
 
@@ -1088,14 +1059,8 @@ private:
         Location return_target;
         Location descent_target;
         bool land;
+        bool terrain_used;
     } rtl_path;
-
-    // return target alt type
-    enum class ReturnTargetAltType {
-        RETURN_TARGET_ALTTYPE_RELATIVE = 0,
-        RETURN_TARGET_ALTTYPE_RANGEFINDER = 1,
-        RETURN_TARGET_ALTTYPE_TERRAINDATABASE = 2
-    };
 
     // Loiter timer - Records how long we have been in loiter
     uint32_t _loiter_start_time;
@@ -1388,7 +1353,6 @@ public:
     using Mode::Mode;
 
     bool init(bool ignore_checks) override;
-    void exit();
     void run() override;
 
     bool requires_GPS() const override { return true; }

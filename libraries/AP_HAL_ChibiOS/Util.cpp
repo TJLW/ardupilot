@@ -207,6 +207,9 @@ Util::FlashBootloader Util::flash_bootloader()
     // make sure size is multiple of 32
     fw_size = (fw_size + 31U) & ~31U;
 
+    // make sure size is multiple of 32
+    fw_size = (fw_size + 31U) & ~31U;
+
     const uint32_t addr = hal.flash->getpageaddr(0);
     if (!memcmp(fw, (const void*)addr, fw_size)) {
         Debug("Bootloader up-to-date\n");

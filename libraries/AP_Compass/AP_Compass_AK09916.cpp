@@ -104,7 +104,9 @@ AP_Compass_Backend *AP_Compass_AK09916::probe_ICM20948(AP_HAL::OwnPtr<AP_HAL::I2
         return nullptr;
     }
 
-    dev->get_semaphore()->take_blocking();
+    if (!dev->get_semaphore()->take(HAL_SEMAPHORE_BLOCK_FOREVER)) {
+        return nullptr;
+    }
 
     /* Allow ICM20x48 to shortcut auxiliary bus and host bus */
     uint8_t rval;
@@ -190,10 +192,9 @@ bool AP_Compass_AK09916::init()
 {
     AP_HAL::Semaphore *bus_sem = _bus->get_semaphore();
 
-    if (!bus_sem) {
+    if (!bus_sem || !_bus->get_semaphore()->take(HAL_SEMAPHORE_BLOCK_FOREVER)) {
         return false;
     }
-    _bus->get_semaphore()->take_blocking();
 
     if (!_bus->configure()) {
         hal.console->printf("AK09916: Could not configure the bus\n");
@@ -201,6 +202,7 @@ bool AP_Compass_AK09916::init()
     }
 
     if (!_reset()) {
+        hal.console->printf("AK09916: Reset Failed\n");
         goto fail;
     }
 
@@ -222,11 +224,7 @@ bool AP_Compass_AK09916::init()
     _initialized = true;
 
     /* register the compass instance in the frontend */
-    _bus->set_device_type(DEVTYPE_AK09916);
-    if (!register_compass(_bus->get_bus_id(), _compass_instance)) {
-        goto fail;
-    }
-    set_dev_id(_compass_instance, _bus->get_bus_id());
+    _compass_instance = register_compass();
 
     if (_force_external) {
         set_external(_compass_instance, true);
@@ -234,6 +232,9 @@ bool AP_Compass_AK09916::init()
 
     set_rotation(_compass_instance, _rotation);
     
+    _bus->set_device_type(DEVTYPE_AK09916);
+    set_dev_id(_compass_instance, _bus->get_bus_id());
+
     bus_sem->give();
 
     _bus->register_periodic_callback(10000, FUNCTOR_BIND_MEMBER(&AP_Compass_AK09916::_update, void));

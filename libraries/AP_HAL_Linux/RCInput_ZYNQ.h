@@ -24,12 +24,13 @@ private:
 #endif
 
 
-#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
-		// Memory mapped keyhole register to pwm decoder
+#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ || \
+    CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ULTRA96_ZYNQMP
+	// Memory mapped keyhole register to pwm decoder
     uint16_t *pwm_channel_inputs;
 #else
-		// Memory mapped keyhole register to pulse input FIFO
-		volatile uint32_t *pulse_input;
+	// Memory mapped keyhole register to pulse input FIFO
+	volatile uint32_t *pulse_input;
 #endif
 
     // time spent in the low state

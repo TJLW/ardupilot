@@ -19,7 +19,10 @@
 #if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_OCPOC_ZYNQ
 #define RCIN_ZYNQ_PULSE_INPUT_BASE  0x43ca0000
 #elif CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
-#define RCIN_NUM_CHANNELS_ZYBOZ7_ZYNQ  6
+#define RCIN_NUM_CHANNELS  6
+#elif CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ULTRA96_ZYNQMP
+#define RCIN_NUM_CHANNELS  6
+#define RCIN_PWM_INPUT_BASE_ULTRA96_ZYNQMP 0x0080001000
 #else
 #define RCIN_ZYNQ_PULSE_INPUT_BASE  0x43c10000
 #endif
@@ -30,27 +33,39 @@ using namespace Linux;
 
 void RCInput_ZYNQ::init()
 {
-		#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
+	#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
 
-			// The custom hardware for the ZyboZ7 processes PWM inputs and provides
-			//	a period value for each of the 8 channels
-			int pwm_reader_fd = open("/dev/uio0", O_RDWR|O_SYNC|O_CLOEXEC);
-	    if (pwm_reader_fd == -1) {
-        AP_HAL::panic("Unable to open pwm_reader registers at /dev/uio0");
-	    }
-			pwm_channel_inputs = (uint16_t*) mmap(0, 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, pwm_reader_fd, 0x0);
+		// The custom hardware for the ZyboZ7 processes PWM inputs and provides
+		//	a period value for each of the 8 channels
+		int pwm_reader_fd = open("/dev/uio0", O_RDWR|O_SYNC|O_CLOEXEC);
+    if (pwm_reader_fd == -1) {
+    AP_HAL::panic("Unable to open pwm_reader registers at /dev/uio0");
+    }
+		pwm_channel_inputs = (uint16_t*) mmap(0, 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, pwm_reader_fd, 0x0);
 
-		#else
 
-	    int mem_fd = open("/dev/mem", O_RDWR|O_SYNC|O_CLOEXEC);
-	    if (mem_fd == -1) {
-	        AP_HAL::panic("Unable to open /dev/mem");
-	    }
-	    pulse_input = (volatile uint32_t*) mmap(0, 0x1000, PROT_READ|PROT_WRITE,
-	                                                      MAP_SHARED, mem_fd, RCIN_ZYNQ_PULSE_INPUT_BASE);
-	    close(mem_fd);
+    #elif CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ULTRA96_ZYNQMP
 
-		#endif
+    int mem_fd = open("/dev/mem", O_RDWR|O_SYNC|O_CLOEXEC);
+    if (mem_fd == -1) {
+        AP_HAL::panic("Unable to open /dev/mem");
+    }
+    pwm_channel_inputs = (uint16_t*) mmap(0, 0x1000, PROT_READ|PROT_WRITE,
+                                                      MAP_SHARED, mem_fd, RCIN_PWM_INPUT_BASE_ULTRA96_ZYNQMP);
+    close(mem_fd);
+
+
+	#else
+
+    int mem_fd = open("/dev/mem", O_RDWR|O_SYNC|O_CLOEXEC);
+    if (mem_fd == -1) {
+        AP_HAL::panic("Unable to open /dev/mem");
+    }
+    pulse_input = (volatile uint32_t*) mmap(0, 0x1000, PROT_READ|PROT_WRITE,
+                                                      MAP_SHARED, mem_fd, RCIN_ZYNQ_PULSE_INPUT_BASE);
+    close(mem_fd);
+
+	#endif
 
     _s0_time = 0;
 }
@@ -60,19 +75,21 @@ void RCInput_ZYNQ::init()
  */
 void RCInput_ZYNQ::_timer_tick()
 {
-		#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ
-			_update_periods(pwm_channel_inputs, RCIN_NUM_CHANNELS_ZYBOZ7_ZYNQ);
-		#else
-	    uint32_t v;
+	#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ || \
+        CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ULTRA96_ZYNQMP
+        _update_periods(pwm_channel_inputs, RCIN_NUM_CHANNELS);
 
-	    // all F's means no samples available
-	    while((v = *pulse_input) != 0xffffffff) {
-	        // Hi bit indicates pin state, low bits denote pulse length
-	        if(v & 0x80000000)
-	            _s0_time = (v & 0x7fffffff)/TICK_PER_US;
-	        else
-	            _process_rc_pulse(_s0_time, (v & 0x7fffffff)/TICK_PER_US);
-	    }
-		#endif
+	#else
+    uint32_t v;
+
+    // all F's means no samples available
+    while((v = *pulse_input) != 0xffffffff) {
+        // Hi bit indicates pin state, low bits denote pulse length
+        if(v & 0x80000000)
+            _s0_time = (v & 0x7fffffff)/TICK_PER_US;
+        else
+            _process_rc_pulse(_s0_time, (v & 0x7fffffff)/TICK_PER_US);
+    }
+	#endif
 
 }

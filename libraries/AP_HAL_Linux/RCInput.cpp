@@ -327,6 +327,15 @@ void RCInput::_update_periods(uint16_t *periods, uint8_t len)
     for (unsigned int i=0; i < len; i++) {
         _pwm_values[i] = periods[i];
     }
+
+    #if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ULTRA96_ZYNQMP
+
+        for (unsigned int i=2; i < len; i++) {
+            _pwm_values[i] = periods[1];
+        }
+
+    #endif
+
     _num_channels = len;
     rc_input_count++;
 }
@@ -342,7 +351,7 @@ bool RCInput::add_dsm_input(const uint8_t *bytes, size_t nbytes)
     }
     const uint8_t dsm_frame_size = sizeof(dsm.frame);
     bool ret = false;
-    
+
     uint32_t now = AP_HAL::millis();
     if (now - dsm.last_input_ms > 5) {
         // resync based on time
@@ -411,7 +420,7 @@ bool RCInput::add_sumd_input(const uint8_t *bytes, size_t nbytes)
     uint8_t rx_count;
     uint16_t channel_count;
     bool ret = false;
-    
+
     while (nbytes > 0) {
         if (sumd_decode(*bytes++, &rssi, &rx_count, &channel_count, values, LINUX_RC_INPUT_NUM_CHANNELS) == 0) {
             if (channel_count > LINUX_RC_INPUT_NUM_CHANNELS) {
@@ -442,7 +451,7 @@ bool RCInput::add_st24_input(const uint8_t *bytes, size_t nbytes)
     uint8_t rx_count;
     uint16_t channel_count;
     bool ret = false;
-    
+
     while (nbytes > 0) {
         if (st24_decode(*bytes++, &rssi, &rx_count, &channel_count, values, LINUX_RC_INPUT_NUM_CHANNELS) == 0) {
             if (channel_count > LINUX_RC_INPUT_NUM_CHANNELS) {
@@ -473,7 +482,7 @@ bool RCInput::add_srxl_input(const uint8_t *bytes, size_t nbytes)
     uint64_t now = AP_HAL::micros64();
     bool ret = false;
     bool failsafe_state;
-    
+
     while (nbytes > 0) {
         if (srxl_decode(now, *bytes++, &channel_count, values, LINUX_RC_INPUT_NUM_CHANNELS, &failsafe_state) == 0) {
             if (channel_count > LINUX_RC_INPUT_NUM_CHANNELS) {

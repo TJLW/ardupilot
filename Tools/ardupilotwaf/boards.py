@@ -664,6 +664,16 @@ class zyboZ7_zynq(linux):
             CONFIG_HAL_BOARD_SUBTYPE = 'HAL_BOARD_SUBTYPE_LINUX_ZYBOZ7_ZYNQ',
         )
 
+class ultra96_zynqmp(linux):
+    toolchain = 'aarch64-linux-gnu'
+
+    def configure_env(self, cfg, env):
+        super(ultra96_zynqmp, self).configure_env(cfg, env)
+
+        env.DEFINES.update(
+            CONFIG_HAL_BOARD_SUBTYPE = 'HAL_BOARD_SUBTYPE_LINUX_ULTRA96_ZYNQMP',
+        )
+
 class bbbmini(linux):
     toolchain = 'arm-linux-gnueabihf'
 
